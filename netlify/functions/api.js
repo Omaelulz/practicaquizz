@@ -9,11 +9,12 @@ async function getProxy() {
   if (!proxyPromise) {
     proxyPromise = (async () => {
       const app = await buildApp();
-      await app.ready();
+      // El redirect de Netlify reescribe /api/foo -> /.netlify/functions/api/foo,
+      // por lo que el path que llega aqui incluye el prefijo de la function.
+      // Lo quitamos para que las rutas Fastify (definidas como /subjects, /quiz/start...) coincidan.
+      // No llamamos a app.ready() manualmente: awsLambdaFastify decora la request
+      // y eso falla si la app ya esta arrancada.
       return awsLambdaFastify(app, {
-        // El redirect de Netlify reescribe /api/foo -> /.netlify/functions/api/foo,
-        // por lo que el path que llega aqui incluye el prefijo de la function.
-        // Lo quitamos para que las rutas Fastify (definidas como /subjects, /quiz/start...) coincidan.
         stripBasePath: '/.netlify/functions/api'
       });
     })();
