@@ -1,7 +1,39 @@
 import { supabaseAdmin } from '../lib/supabase.js';
+import { generateAIQuestions, isAIEnabled } from '../lib/aiQuestions.js';
 
 // Modo duelo: 10 preguntas contra un bot simulado
 const DUEL_QUESTIONS = 10;
+
+async function aiPickQuestions(fastify, subject, count) {
+  try {
+    const generated = await generateAIQuestions({
+      subjectSlug: subject.slug,
+      subjectName: subject.name,
+      subjectDescription: subject.description,
+      count
+    });
+    const rows = generated.map((q) => ({
+      subject_id: subject.id,
+      type: q.type,
+      difficulty: q.difficulty,
+      statement: q.statement,
+      code_snippet: q.code_snippet,
+      options: q.options,
+      answer: q.answer,
+      explanation: q.explanation,
+      tags: q.tags
+    }));
+    const { data, error } = await supabaseAdmin.from('questions').insert(rows).select('*');
+    if (error) {
+      fastify.log.error({ err: error }, 'No se pudieron insertar preguntas IA');
+      return null;
+    }
+    return data;
+  } catch (err) {
+    fastify.log.warn({ err: err.message }, 'Generación IA falló, usando preguntas de DB');
+    return null;
+  }
+}
 
 function publicQuestion(q) {
   const { answer, ...rest } = q;
@@ -47,31 +79,37 @@ export default async function duelRoutes(fastify) {
 
     const { data: subj, error: e1 } = await supabaseAdmin
       .from('subjects')
-      .select('id, slug, name, color')
+      .select('id, slug, name, description, color')
       .eq('slug', subject)
       .single();
     if (e1 || !subj) return reply.code(404).send({ error: 'subject not found' });
 
-    const { data: questions, error: e2 } = await supabaseAdmin
-      .from('questions')
-      .select('*')
-      .eq('subject_id', subj.id);
-    if (e2) return reply.code(500).send({ error: e2.message });
+    let picked = null;
+    if (isAIEnabled()) {
+      const aiRows = await aiPickQuestions(fastify, subj, DUEL_QUESTIONS);
+      if (aiRows && aiRows.length > 0) {
+        picked = [...aiRows].sort(() => Math.random() - 0.5);
+      }
+    }
 
-    // Mix difficulties: 3 easy, 4 medium, 3 hard
-    const byDiff = { 1: [], 2: [], 3: [] };
-    for (const q of questions) byDiff[q.difficulty]?.push(q);
-    const pickRandom = (arr, n) => [...arr].sort(() => Math.random() - 0.5).slice(0, n);
-    const picked = [
-      ...pickRandom(byDiff[1], 3),
-      ...pickRandom(byDiff[2], 4),
-      ...pickRandom(byDiff[3], 3)
-    ].sort(() => Math.random() - 0.5); // shuffle final order
-
-    // Fill up if not enough questions in some difficulty
-    while (picked.length < DUEL_QUESTIONS && questions.length > picked.length) {
-      const candidate = questions[Math.floor(Math.random() * questions.length)];
-      if (!picked.find((p) => p.id === candidate.id)) picked.push(candidate);
+    if (!picked) {
+      const { data: questions, error: e2 } = await supabaseAdmin
+        .from('questions')
+        .select('*')
+        .eq('subject_id', subj.id);
+      if (e2) return reply.code(500).send({ error: e2.message });
+      const byDiff = { 1: [], 2: [], 3: [] };
+      for (const q of questions) byDiff[q.difficulty]?.push(q);
+      const pickRandom = (arr, n) => [...arr].sort(() => Math.random() - 0.5).slice(0, n);
+      picked = [
+        ...pickRandom(byDiff[1], 3),
+        ...pickRandom(byDiff[2], 4),
+        ...pickRandom(byDiff[3], 3)
+      ].sort(() => Math.random() - 0.5);
+      while (picked.length < DUEL_QUESTIONS && questions.length > picked.length) {
+        const candidate = questions[Math.floor(Math.random() * questions.length)];
+        if (!picked.find((p) => p.id === candidate.id)) picked.push(candidate);
+      }
     }
 
     return {

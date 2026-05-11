@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../lib/supabase.js';
+import { generateAIQuestions, isAIEnabled } from '../lib/aiQuestions.js';
 
 // Configuracion de cada modo de juego
 // count = numero de preguntas, secondsPerQuestion = tiempo por pregunta (null = sin limite)
@@ -8,6 +9,43 @@ const MODE_CONFIG = {
   daily:  { count: 5,  secondsPerQuestion: 45 },
   study:  { count: 20, secondsPerQuestion: null }
 };
+
+// Genera preguntas con IA y las inserta en la tabla questions para que
+// /quiz/submit pueda leerlas con su respuesta. Devuelve las filas insertadas.
+// Si la IA falla, devuelve null para que el caller haga fallback a DB.
+async function generateAndInsertQuestions(fastify, subject, count) {
+  try {
+    const generated = await generateAIQuestions({
+      subjectSlug: subject.slug,
+      subjectName: subject.name,
+      subjectDescription: subject.description,
+      count
+    });
+    const rows = generated.map((q) => ({
+      subject_id: subject.id,
+      type: q.type,
+      difficulty: q.difficulty,
+      statement: q.statement,
+      code_snippet: q.code_snippet,
+      options: q.options,
+      answer: q.answer,
+      explanation: q.explanation,
+      tags: q.tags
+    }));
+    const { data, error } = await supabaseAdmin
+      .from('questions')
+      .insert(rows)
+      .select('*');
+    if (error) {
+      fastify.log.error({ err: error }, 'No se pudieron insertar preguntas IA');
+      return null;
+    }
+    return data;
+  } catch (err) {
+    fastify.log.warn({ err: err.message }, 'Generación IA falló, usando preguntas de DB');
+    return null;
+  }
+}
 
 // Quita la respuesta para no enviarla al navegador
 function publicQuestion(q) {
@@ -48,21 +86,30 @@ export default async function quizRoutes(fastify) {
 
     const { data: subj, error: e1 } = await supabaseAdmin
       .from('subjects')
-      .select('id, slug, name, color, boss:bosses(id, slug, name, theme_color)')
+      .select('id, slug, name, description, color, boss:bosses(id, slug, name, theme_color)')
       .eq('slug', subject)
       .single();
     if (e1 || !subj) return reply.code(404).send({ error: 'subject not found' });
 
-    const { data: questions, error: e2 } = await supabaseAdmin
-      .from('questions')
-      .select('*')
-      .eq('subject_id', subj.id);
-    if (e2) return reply.code(500).send({ error: e2.message });
-
     const config = MODE_CONFIG[mode];
-    // Shuffle and take N
-    const shuffled = [...questions].sort(() => Math.random() - 0.5);
-    const picked = shuffled.slice(0, Math.min(config.count, shuffled.length));
+
+    // Primero intentamos generar las preguntas con IA. Si falla o no hay clave,
+    // caemos al banco de preguntas de la base de datos.
+    let picked = null;
+    if (isAIEnabled()) {
+      const aiRows = await generateAndInsertQuestions(fastify, subj, config.count);
+      if (aiRows && aiRows.length > 0) picked = aiRows;
+    }
+
+    if (!picked) {
+      const { data: questions, error: e2 } = await supabaseAdmin
+        .from('questions')
+        .select('*')
+        .eq('subject_id', subj.id);
+      if (e2) return reply.code(500).send({ error: e2.message });
+      const shuffled = [...questions].sort(() => Math.random() - 0.5);
+      picked = shuffled.slice(0, Math.min(config.count, shuffled.length));
+    }
 
     return {
       subject: subj,
