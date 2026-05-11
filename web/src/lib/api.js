@@ -1,7 +1,10 @@
 // Cliente API - todas las llamadas al backend pasan por aqui
 import { supabase } from './supabase';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+// En prod (Netlify) las llamadas pasan por /api/* (ver netlify.toml redirect a la function).
+// En dev por defecto al backend local. VITE_API_URL puede sobreescribir ambos casos.
+const API_URL = import.meta.env.VITE_API_URL
+  || (import.meta.env.PROD ? '/api' : 'http://localhost:3000');
 
 // Saca el token JWT de la sesion actual para enviarlo como header
 async function authHeader() {

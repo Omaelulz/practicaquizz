@@ -15,13 +15,15 @@ async function getProxy() {
   return proxyPromise;
 }
 
-const FUNCTION_PREFIX = '/.netlify/functions/api';
+// Netlify puede pasar a la function tanto el path reescrito (/.netlify/functions/api/...)
+// como el original que matchea el redirect (/api/...). Quitamos ambos prefijos.
+const PREFIXES = ['/.netlify/functions/api', '/api'];
 
 function stripPrefix(path) {
   if (!path) return path;
-  if (path.startsWith(FUNCTION_PREFIX)) {
-    const rest = path.slice(FUNCTION_PREFIX.length);
-    return rest.length === 0 ? '/' : rest;
+  for (const prefix of PREFIXES) {
+    if (path === prefix) return '/';
+    if (path.startsWith(prefix + '/')) return path.slice(prefix.length);
   }
   return path;
 }
